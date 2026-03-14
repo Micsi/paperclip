@@ -110,6 +110,18 @@ export function companyService(db: Db) {
       .leftJoin(companyLogos, eq(companyLogos.companyId, companies.id));
   }
 
+  async function loadHydratedCompany(
+    id: string,
+    database: Pick<Db, "select"> = db,
+  ) {
+    const row = await getCompanyQuery(database)
+      .where(eq(companies.id, id))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const [hydrated] = await hydrateCompanySpend([row], database);
+    return enrichCompany(hydrated);
+  }
+
   function deriveIssuePrefixBase(name: string) {
     const normalized = name.toUpperCase().replace(/[^A-Z]/g, "");
     return normalized.slice(0, 3) || ISSUE_PREFIX_FALLBACK;
@@ -255,6 +267,93 @@ export function companyService(db: Db) {
         if (!row) return null;
         const [hydrated] = await hydrateCompanySpend([row], tx);
         return enrichCompany(hydrated);
+      }),
+
+    countActiveRuns: async (companyId: string) => {
+      const [{ value }] = await db
+        .select({ value: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.status, ["queued", "running"])));
+      return Number(value ?? 0);
+    },
+
+    pause: (id: string, force = false) =>
+      db.transaction(async (tx) => {
+        const company = await tx
+          .select({ id: companies.id, status: companies.status })
+          .from(companies)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!company) return null;
+        if (company.status === "archived") {
+          throw unprocessable("Archived companies cannot be paused");
+        }
+        if (company.status === "paused") {
+          return loadHydratedCompany(id, tx);
+        }
+
+        if (force) {
+          await tx
+            .update(companies)
+            .set({ status: "paused", updatedAt: new Date() })
+            .where(eq(companies.id, id));
+          return loadHydratedCompany(id, tx);
+        }
+
+        const [{ value }] = await tx
+          .select({ value: sql<number>`count(*)` })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, id), inArray(heartbeatRuns.status, ["queued", "running"])));
+        const activeRuns = Number(value ?? 0);
+        const nextStatus = activeRuns > 0 ? "pausing" : "paused";
+
+        await tx
+          .update(companies)
+          .set({ status: nextStatus, updatedAt: new Date() })
+          .where(eq(companies.id, id));
+
+        // Re-check in the same transaction so we do not leave the company
+        // stuck in "pausing" if runs drain between count and update.
+        await tx
+          .update(companies)
+          .set({ status: "paused", updatedAt: new Date() })
+          .where(
+            and(
+              eq(companies.id, id),
+              eq(companies.status, "pausing"),
+              sql`not exists (
+                select 1
+                from ${heartbeatRuns}
+                where ${heartbeatRuns.companyId} = ${id}
+                  and ${heartbeatRuns.status} in ('queued', 'running')
+              )`,
+            ),
+          );
+
+        return loadHydratedCompany(id, tx);
+      }),
+
+    resume: (id: string) =>
+      db.transaction(async (tx) => {
+        const company = await tx
+          .select({ id: companies.id, status: companies.status })
+          .from(companies)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!company) return null;
+        if (company.status === "archived") {
+          throw unprocessable("Archived companies cannot be resumed");
+        }
+        if (company.status === "active") {
+          return loadHydratedCompany(id, tx);
+        }
+
+        await tx
+          .update(companies)
+          .set({ status: "active", updatedAt: new Date() })
+          .where(and(eq(companies.id, id), inArray(companies.status, ["paused", "pausing"])));
+
+        return loadHydratedCompany(id, tx);
       }),
 
     remove: (id: string) =>
