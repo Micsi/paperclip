@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 export interface Breadcrumb {
   label: string;
   href?: string;
+  status?: string;
 }
 
 interface BreadcrumbContextValue {
