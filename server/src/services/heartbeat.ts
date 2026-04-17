@@ -5138,6 +5138,10 @@ export function heartbeatService(db: Db) {
       await releaseIssueExecutionAndPromote(run);
     }
 
+    if (runs.length > 0) {
+      await checkCompanyGracefulPause(runs[0]!.companyId).catch(() => undefined);
+    }
+
     return runs.length;
   }
 
