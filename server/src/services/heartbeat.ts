@@ -2756,7 +2756,7 @@ export function heartbeatService(db: Db) {
     await db
       .update(companies)
       .set({ status: "paused", updatedAt: new Date() })
-      .where(eq(companies.id, companyId));
+      .where(and(eq(companies.id, companyId), eq(companies.status, "pausing")));
 
     logger.info({ companyId }, "company graceful pause complete: pausing → paused");
   }
@@ -4124,7 +4124,7 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
-      await checkCompanyGracefulPause(agent.companyId);
+      await checkCompanyGracefulPause(agent.companyId).catch(() => undefined);
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -4190,7 +4190,7 @@ export function heartbeatService(db: Db) {
       }
 
       await finalizeAgentStatus(agent.id, "failed");
-      await checkCompanyGracefulPause(agent.companyId);
+      await checkCompanyGracefulPause(agent.companyId).catch(() => undefined);
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
