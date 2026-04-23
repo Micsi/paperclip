@@ -1314,9 +1314,10 @@ function describeSessionResetReason(
   return null;
 }
 
-function shouldAutoCheckoutIssueForWake(input: {
+export function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
+  issueHasActiveBlockers: boolean;
   issueAssigneeAgentId: string | null;
   isDependencyReady: boolean;
   agentId: string;
@@ -1333,6 +1334,7 @@ function shouldAutoCheckoutIssueForWake(input: {
   ) {
     return false;
   }
+  if (issueStatus === "blocked" && input.issueHasActiveBlockers) return false;
 
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
@@ -1905,7 +1907,7 @@ export function heartbeatService(db: Db) {
   }
 
   async function getIssueExecutionContext(companyId: string, issueId: string) {
-    return db
+    const issue = await db
       .select({
         id: issues.id,
         identifier: issues.identifier,
@@ -1923,6 +1925,31 @@ export function heartbeatService(db: Db) {
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
+    if (!issue) return null;
+
+    if (issue.status !== "blocked") {
+      return { ...issue, hasActiveBlockers: false };
+    }
+
+    const activeBlocker = await db
+      .select({ id: issueRelations.issueId })
+      .from(issueRelations)
+      .innerJoin(
+        issues,
+        and(eq(issueRelations.issueId, issues.id), eq(issueRelations.companyId, issues.companyId)),
+      )
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, issueId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    return { ...issue, hasActiveBlockers: Boolean(activeBlocker) };
   }
 
   async function getRuntimeState(agentId: string) {
@@ -4913,6 +4940,7 @@ export function heartbeatService(db: Db) {
       shouldAutoCheckoutIssueForWake({
         contextSnapshot: context,
         issueStatus: issueContext.status,
+        issueHasActiveBlockers: Boolean(issueContext.hasActiveBlockers),
         issueAssigneeAgentId: issueContext.assigneeAgentId,
         isDependencyReady: issueDependencyReadiness?.isDependencyReady ?? true,
         agentId: agent.id,

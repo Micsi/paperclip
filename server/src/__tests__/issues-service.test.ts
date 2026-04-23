@@ -1446,13 +1446,95 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ]);
     await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
 
-    await expect(
-      svc.update(blockedId, { status: "in_progress" }),
-    ).rejects.toMatchObject({ status: 422 });
+    await expect(svc.update(blockedId, { status: "in_progress" })).rejects.toMatchObject({ status: 422 });
 
-    await expect(
-      svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], null),
-    ).rejects.toMatchObject({ status: 422 });
+    await expect(svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], null)).rejects.toMatchObject({
+      status: 422,
+    });
+  });
+
+  it("rejects checkout when a blocked issue still has unresolved blockers", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Active blocker", status: "in_progress", priority: "high" },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+    await svc.update(blockedIssueId, { blockedByIssueIds: [blockerId] });
+
+    await expect(svc.checkout(blockedIssueId, assigneeAgentId, ["blocked"], "run-1")).rejects.toMatchObject({
+      status: 409,
+    });
+
+    const unchanged = await svc.getById(blockedIssueId);
+    expect(unchanged?.status).toBe("blocked");
+  });
+
+  it("allows checkout when blocked issue blockers are resolved", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Resolved blocker", status: "done", priority: "high" },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+    await svc.update(blockedIssueId, { blockedByIssueIds: [blockerId] });
+
+    const checkedOut = await svc.checkout(blockedIssueId, assigneeAgentId, ["blocked"], null);
+    expect(checkedOut.status).toBe("in_progress");
   });
 
   it("wakes parents only when all direct children are terminal", async () => {
