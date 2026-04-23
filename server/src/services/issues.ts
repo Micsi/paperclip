@@ -1778,12 +1778,37 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, status: issues.status })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(issueCompany.companyId, agentId);
+
+      if (issueCompany.status === "blocked") {
+        const unresolvedBlockers = await db
+          .select({ blockerIssueId: issueRelations.issueId, blockerStatus: issues.status })
+          .from(issueRelations)
+          .innerJoin(
+            issues,
+            and(eq(issueRelations.issueId, issues.id), eq(issueRelations.companyId, issues.companyId)),
+          )
+          .where(
+            and(
+              eq(issueRelations.companyId, issueCompany.companyId),
+              eq(issueRelations.relatedIssueId, id),
+              eq(issueRelations.type, "blocks"),
+              ne(issues.status, "done"),
+            ),
+          );
+
+        if (unresolvedBlockers.length > 0) {
+          throw conflict("Issue checkout blocked by unresolved blockers", {
+            issueId: id,
+            unresolvedBlockerIssueIds: unresolvedBlockers.map((blocker) => blocker.blockerIssueId),
+          });
+        }
+      }
 
       const now = new Date();
 

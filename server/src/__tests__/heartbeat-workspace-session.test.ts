@@ -15,6 +15,7 @@ import {
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
+  shouldAutoCheckoutIssueForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 
@@ -340,6 +341,34 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldAutoCheckoutIssueForWake", () => {
+  it("skips auto-checkout for blocked issues when active blockers remain", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        contextSnapshot: { wakeReason: "issue_assigned" },
+        issueStatus: "blocked",
+        issueHasActiveBlockers: true,
+        issueAssigneeAgentId: "agent-1",
+        isDependencyReady: true,
+        agentId: "agent-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("allows auto-checkout for blocked issues when blockers are clear", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        contextSnapshot: { wakeReason: "issue_blockers_resolved" },
+        issueStatus: "blocked",
+        issueHasActiveBlockers: false,
+        issueAssigneeAgentId: "agent-1",
+        isDependencyReady: true,
+        agentId: "agent-1",
+      }),
+    ).toBe(true);
   });
 });
 
