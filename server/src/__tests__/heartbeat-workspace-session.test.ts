@@ -9,6 +9,7 @@ import {
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  isCheckoutConflictError,
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
@@ -18,6 +19,7 @@ import {
   shouldAutoCheckoutIssueForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
+import { HttpError } from "../errors.js";
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {
@@ -369,6 +371,20 @@ describe("shouldAutoCheckoutIssueForWake", () => {
         agentId: "agent-1",
       }),
     ).toBe(true);
+  });
+});
+
+describe("isCheckoutConflictError", () => {
+  it("classifies generic checkout conflicts as non-fatal auto-checkout conflicts", () => {
+    expect(isCheckoutConflictError(new HttpError(409, "Issue checkout conflict"))).toBe(true);
+  });
+
+  it("classifies blocker checkout conflicts as non-fatal auto-checkout conflicts", () => {
+    expect(isCheckoutConflictError(new HttpError(409, "Issue checkout blocked by unresolved blockers"))).toBe(true);
+  });
+
+  it("rejects non-checkout 409 errors", () => {
+    expect(isCheckoutConflictError(new HttpError(409, "Issue run ownership conflict"))).toBe(false);
   });
 });
 

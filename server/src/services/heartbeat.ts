@@ -1063,8 +1063,8 @@ export function shouldAutoCheckoutIssueForWake(input: {
   return true;
 }
 
-function isCheckoutConflictError(error: unknown): boolean {
-  return error instanceof HttpError && error.status === 409 && error.message === "Issue checkout conflict";
+export function isCheckoutConflictError(error: unknown): boolean {
+  return error instanceof HttpError && error.status === 409 && error.message.startsWith("Issue checkout ");
 }
 
 function deriveCommentId(

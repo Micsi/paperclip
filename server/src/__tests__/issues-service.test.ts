@@ -1177,6 +1177,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
     const blockerId = randomUUID();
     const blockedIssueId = randomUUID();
+    const runId = randomUUID();
     await db.insert(issues).values([
       { id: blockerId, companyId, title: "Active blocker", status: "in_progress", priority: "high" },
       {
@@ -1190,10 +1191,64 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ]);
     await svc.update(blockedIssueId, { blockedByIssueIds: [blockerId] });
 
-    await expect(svc.checkout(blockedIssueId, assigneeAgentId, ["blocked"], "run-1")).rejects.toMatchObject({
+    await expect(svc.checkout(blockedIssueId, assigneeAgentId, ["blocked"], runId)).rejects.toMatchObject({
       status: 409,
     });
 
+    const unchanged = await svc.getById(blockedIssueId);
+    expect(unchanged?.status).toBe("blocked");
+  });
+
+  it("keeps blocked issues blocked when blockers reactivate during checkout", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Resolved blocker", status: "done", priority: "high" },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+    await svc.update(blockedIssueId, { blockedByIssueIds: [blockerId] });
+
+    let checkoutPromise: Promise<Awaited<ReturnType<typeof svc.checkout>>> | null = null;
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select id from issues where id = ${blockedIssueId} for update`);
+      checkoutPromise = svc.checkout(blockedIssueId, assigneeAgentId, ["blocked"], runId);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await svc.update(blockerId, { status: "todo" });
+    });
+    if (!checkoutPromise) throw new Error("Checkout promise was not created");
+
+    await expect(checkoutPromise).rejects.toMatchObject({
+      status: 409,
+      message: "Issue checkout blocked by unresolved blockers",
+    });
     const unchanged = await svc.getById(blockedIssueId);
     expect(unchanged?.status).toBe("blocked");
   });
