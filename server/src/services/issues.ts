@@ -1778,12 +1778,40 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, status: issues.status })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(issueCompany.companyId, agentId);
+
+      const loadUnresolvedBlockers = async () =>
+        db
+          .select({ blockerIssueId: issueRelations.issueId, blockerStatus: issues.status })
+          .from(issueRelations)
+          .innerJoin(
+            issues,
+            and(eq(issueRelations.issueId, issues.id), eq(issueRelations.companyId, issues.companyId)),
+          )
+          .where(
+            and(
+              eq(issueRelations.companyId, issueCompany.companyId),
+              eq(issueRelations.relatedIssueId, id),
+              eq(issueRelations.type, "blocks"),
+              ne(issues.status, "done"),
+            ),
+          );
+
+      if (issueCompany.status === "blocked") {
+        const unresolvedBlockers = await loadUnresolvedBlockers();
+
+        if (unresolvedBlockers.length > 0) {
+          throw conflict("Issue checkout blocked by unresolved blockers", {
+            issueId: id,
+            unresolvedBlockerIssueIds: unresolvedBlockers.map((blocker) => blocker.blockerIssueId),
+          });
+        }
+      }
 
       const now = new Date();
 
@@ -1829,6 +1857,19 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
+      const unresolvedBlockersAbsentCondition = sql<boolean>`
+        not exists (
+          select 1
+          from issue_relations as blocker_rel
+          inner join issues as blocker_issue
+            on blocker_rel.issue_id = blocker_issue.id
+            and blocker_rel.company_id = blocker_issue.company_id
+          where blocker_rel.company_id = ${issueCompany.companyId}
+            and blocker_rel.related_issue_id = ${id}
+            and blocker_rel.type = 'blocks'
+            and blocker_issue.status <> 'done'
+        )
+      `;
       const updated = await db
         .update(issues)
         .set({
@@ -1846,6 +1887,7 @@ export function issueService(db: Db) {
             inArray(issues.status, expectedStatuses),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
+            or(ne(issues.status, "blocked"), unresolvedBlockersAbsentCondition),
           ),
         )
         .returning()
@@ -1869,6 +1911,16 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+
+      if (current.status === "blocked") {
+        const unresolvedBlockers = await loadUnresolvedBlockers();
+        if (unresolvedBlockers.length > 0) {
+          throw conflict("Issue checkout blocked by unresolved blockers", {
+            issueId: id,
+            unresolvedBlockerIssueIds: unresolvedBlockers.map((blocker) => blocker.blockerIssueId),
+          });
+        }
+      }
 
       if (
         current.assigneeAgentId === agentId &&

@@ -9,14 +9,17 @@ import {
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  isCheckoutConflictError,
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
+  shouldAutoCheckoutIssueForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
+import { HttpError } from "../errors.js";
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {
@@ -340,6 +343,48 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldAutoCheckoutIssueForWake", () => {
+  it("skips auto-checkout for blocked issues when active blockers remain", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        contextSnapshot: { wakeReason: "issue_assigned" },
+        issueStatus: "blocked",
+        issueHasActiveBlockers: true,
+        issueAssigneeAgentId: "agent-1",
+        isDependencyReady: true,
+        agentId: "agent-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("allows auto-checkout for blocked issues when blockers are clear", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        contextSnapshot: { wakeReason: "issue_blockers_resolved" },
+        issueStatus: "blocked",
+        issueHasActiveBlockers: false,
+        issueAssigneeAgentId: "agent-1",
+        isDependencyReady: true,
+        agentId: "agent-1",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("isCheckoutConflictError", () => {
+  it("classifies generic checkout conflicts as non-fatal auto-checkout conflicts", () => {
+    expect(isCheckoutConflictError(new HttpError(409, "Issue checkout conflict"))).toBe(true);
+  });
+
+  it("classifies blocker checkout conflicts as non-fatal auto-checkout conflicts", () => {
+    expect(isCheckoutConflictError(new HttpError(409, "Issue checkout blocked by unresolved blockers"))).toBe(true);
+  });
+
+  it("rejects non-checkout 409 errors", () => {
+    expect(isCheckoutConflictError(new HttpError(409, "Issue run ownership conflict"))).toBe(false);
   });
 });
 
