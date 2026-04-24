@@ -14,6 +14,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issues,
   projects,
   projectWorkspaces,
